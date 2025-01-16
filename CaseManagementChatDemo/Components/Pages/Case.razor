@@ -1,12 +1,22 @@
 ﻿@page "/case/{CaseNumber}"
+@using CaseManagementChatDemo.Utils
 @using CaseManagementModels
+@using Microsoft.Extensions.Options;
+@using Microsoft.SemanticKernel
+@using Microsoft.KernelMemory;
+@using Microsoft.KernelMemory.AI
+@using Microsoft.KernelMemory.AI.AzureOpenAI
+@using Microsoft.SemanticKernel.ChatCompletion
+
 @inject IHttpClientFactory HttpClientFactory
+@inject IOptions<AppSettings> appSettings
 
 <style>
     .chatbox
     {
-    height:500px;
+    height:400px;
     border: 1px solid black;
+    overflow-x: scroll;
     }
 </style>
 
@@ -42,7 +52,7 @@ else
     </div>
     <div class="row">
         <div class="chatbox">
-
+            @(new MarkupString(messageDisplay))
         </div>
     </div>
     <div class="row">
@@ -53,16 +63,25 @@ else
 }
 
 @code {
-
+    #pragma warning disable SKEXP0010, SKEXP0001, SKEXP0020, KMEXP00
     [Parameter]
     public string CaseNumber { get; set; } = string.Empty;
 
     private CaseModel? CaseDetails { get; set; }
 
     private string chatMessage = string.Empty;
+    private string messageDisplay = string.Empty;
 
     private HttpClient? _apiHttpClient;
     private HttpClient? _aiHttpClient;
+
+    private IKernelBuilder? builder = null;
+    private Kernel? kernel = null;
+    private ChatHistory history = new ChatHistory();
+    private MemoryServerless? kernelMemory = null;
+    private IChatCompletionService? chatCompletionService = null;
+    private GPT4oTokenizer? textTokenizer = null;
+
     protected override async Task OnInitializedAsync()
     {
         //prep http clients
@@ -70,19 +89,140 @@ else
         _aiHttpClient = HttpClientFactory.CreateClient("retryHttpClient");
 
         //Get app settings
+        AppSettings settings = new AppSettings();
+        settings = appSettings.Value;
+
+        //Setup the Tokenizer to use
+        textTokenizer = new GPT4oTokenizer();
 
         //Prep Semantic Kernel
+        builder = Kernel.CreateBuilder()
+          .AddAzureOpenAIChatCompletion(settings.AzureOpenAIChatCompletion.Model, settings.AzureOpenAIChatCompletion.Endpoint, settings.AzureOpenAIChatCompletion.ApiKey, httpClient: _aiHttpClient)
+          .AddAzureOpenAITextEmbeddingGeneration(settings.AzureOpenAIEmbedding.Model, settings.AzureOpenAIChatCompletion.Endpoint, settings.AzureOpenAIChatCompletion.ApiKey, httpClient: _aiHttpClient);
 
+        // Add enterprise components
+        builder.Services.AddLogging(services => services.AddConsole().SetMinimumLevel(LogLevel.Trace));
+
+        // Build the kernel
+        kernel = builder.Build();
+
+        //Setup the memory store
+        var kernelMemoryBuilder = new KernelMemoryBuilder()
+        .WithAzureOpenAITextEmbeddingGeneration(new AzureOpenAIConfig
+            {
+                APIType = AzureOpenAIConfig.APITypes.EmbeddingGeneration,
+                Endpoint = settings.AzureOpenAIChatCompletion.Endpoint,
+                Deployment = settings.AzureOpenAIEmbedding.Model,
+                Auth = AzureOpenAIConfig.AuthTypes.APIKey,
+                APIKey = settings.AzureOpenAIChatCompletion.ApiKey,
+                MaxTokenTotal = settings.AzureOpenAIEmbedding.MaxInputTokens,
+                MaxRetries = 3
+            },
+            httpClient: _aiHttpClient)
+        .WithAzureOpenAITextGeneration(new AzureOpenAIConfig
+            {
+                APIType = AzureOpenAIConfig.APITypes.ChatCompletion,
+                Endpoint = settings.AzureOpenAIChatCompletion.Endpoint,
+                Deployment = settings.AzureOpenAIChatCompletion.Model,
+                Auth = AzureOpenAIConfig.AuthTypes.APIKey,
+                APIKey = settings.AzureOpenAIChatCompletion.ApiKey,
+                MaxTokenTotal = settings.AzureOpenAIChatCompletion.MaxInputTokens,
+                MaxRetries = 3
+            }, httpClient: _aiHttpClient, textTokenizer: textTokenizer)
+            .WithSimpleVectorDb(new Microsoft.KernelMemory.MemoryStorage.DevTools.SimpleVectorDbConfig { StorageType = Microsoft.KernelMemory.FileSystem.DevTools.FileSystemTypes.Volatile, Directory = "knn" }); ;
+
+        //Build the memory store
+        kernelMemory = kernelMemoryBuilder.Build<MemoryServerless>();
+
+        //Get reference to the chat completion service
+        chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+
+        //Setup chat history
+        history = new ChatHistory();
+        history.AddSystemMessage(settings.SystemMessage);
 
         //Load the case details using the HttpClient named casemanagementapi
         var response = await _apiHttpClient.GetAsync($"/case/{CaseNumber}");
         response.EnsureSuccessStatusCode();
         CaseDetails = await response.Content.ReadFromJsonAsync<CaseModel>();
+
+        //Need to see if the docs are already in the vector store. If not, we need to import them.
+        var indexes = await kernelMemory.ListIndexesAsync();
+        bool IsInIndex = indexes.Any(x => x.Name.ToLower() == CaseNumber.ToLower());
+        if (!IsInIndex && CaseDetails!=null)
+        {
+            foreach (var document in CaseDetails.Documents)
+            {
+                await kernelMemory.ImportDocumentAsync(document.URI, StringUtils.RemoveInvalidCharacters(document.URI), null, CaseNumber);
+
+                //We wait for each document to be processed before starting the next.
+                //This could be changed to do things in a more async pattern to increase speed.
+                while (!await kernelMemory.IsDocumentReadyAsync(StringUtils.RemoveInvalidCharacters(document.URI), CaseNumber))
+                {
+                    Thread.Sleep(1000);
+                }
+            }
+        }
     }
 
-    private void sendMessage()
+    private async void sendMessage()
     {
+        //Semantic search of documents for the specific case index
+        SearchResult? searchData = null;
+        MemoryAnswer? answer = null;
+        answer = await kernelMemory!.AskAsync(chatMessage, CaseNumber);
+        if (answer.NoResult)
+            searchData = await kernelMemory!.SearchAsync(chatMessage, CaseNumber);
 
+        //If we got an answer from the kernelmemory, add the facts to the chat history
+        if (!answer.NoResult)
+        {
+            history.AddUserMessage("No matter what the question or request, base the response only on the information below.");
+            history.AddUserMessage(answer.Result);
+            history.AddUserMessage("----------------------------------");
+        }
+
+        //If we got a search result, add the facts to the chat history
+        if (searchData != null && !searchData.NoResult)
+        {
+            if (searchData.Results.Count > 0)
+            {
+                history.AddUserMessage("No matter what the question or request, base the response only on the information below.");
+                foreach (var result in searchData.Results)
+                {
+                    foreach (var p in result.Partitions)
+                    {
+                        history.AddUserMessage(p.Text);
+                    }
+                }
+                history.AddUserMessage("----------------------------------");
+            }
+        }
+
+        history.AddUserMessage(chatMessage);
+
+        messageDisplay += "<b>You:</b> " + chatMessage + "<br/><br/>";
         chatMessage = string.Empty;
+        StateHasChanged();
+
+        await StreamChatCompletionAsync(history, chatCompletionService!);
+
+    }
+
+    public async Task StreamChatCompletionAsync(ChatHistory history, IChatCompletionService chatCompletionService)
+    {
+        string assistantMessage = string.Empty;
+        messageDisplay += "<b>AI:</b> ";
+        StateHasChanged();
+        await foreach (var chatUpdate in chatCompletionService.GetStreamingChatMessageContentsAsync(history))
+        {
+            assistantMessage += chatUpdate;
+            messageDisplay += chatUpdate;
+            StateHasChanged();
+        }
+        messageDisplay += "<br/><br/>";
+
+        history.AddAssistantMessage(assistantMessage);
+        StateHasChanged();
     }
 }

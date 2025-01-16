@@ -1,5 +1,6 @@
 using CaseManagementChatDemo.Components;
 using CaseManagementChatDemo.Utils;
+using CaseManagementModels;
 
 namespace CaseManagementChatDemo;
 
@@ -9,6 +10,7 @@ public class Program
     {
         var builder = WebApplication.CreateBuilder(args);
         builder.AddServiceDefaults();
+        builder.Services.Configure<AppSettings>(builder.Configuration);
 
         // Add services to the container.
         builder.Services.AddRazorComponents()
@@ -23,7 +25,6 @@ public class Program
         builder.Services.AddHttpClient("retryHttpClient").AddPolicyHandler(RetryHelper.GetRetryPolicy());
   
         var app = builder.Build();
-
         app.MapDefaultEndpoints();
 
         // Configure the HTTP request pipeline.
@@ -35,12 +36,15 @@ public class Program
         }
 
         app.UseHttpsRedirection();
-
         app.UseAntiforgery();
-
         app.MapStaticAssets();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
+
+        if (!Directory.Exists("knn"))
+        {
+            Directory.CreateDirectory("knn");
+        }
 
         app.Run();
     }
