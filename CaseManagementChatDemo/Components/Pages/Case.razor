@@ -1,0 +1,88 @@
+﻿@page "/case/{CaseNumber}"
+@using CaseManagementModels
+@inject IHttpClientFactory HttpClientFactory
+
+<style>
+    .chatbox
+    {
+    height:500px;
+    border: 1px solid black;
+    }
+</style>
+
+<h3>Case @CaseNumber</h3>
+
+@if (CaseDetails == null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <div class="row">
+        <div class="col-md-1">Name</div>
+        <div class="col-md-11">@CaseDetails.CaseName</div>
+    </div>
+    <div class="row">
+        <div class="col-md-1">Description</div>
+        <div class="col-md-11">@CaseDetails.CaseDescription</div>
+    </div>
+    <div class="row">
+        <div class="col-md-11">Documents:</div>
+    </div>
+    <div class="row">
+        <div class="col-md-1"></div>
+        <div class="col-md-11">
+            <ul>
+                @foreach (var document in CaseDetails.Documents)
+                {
+                    <li>@document.URI</li>
+                }
+            </ul>
+        </div>
+    </div>
+    <div class="row">
+        <div class="chatbox">
+
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-md-4">
+            <InputText @bind-Value="chatMessage" /><button class="btn btn-primary" @onclick="sendMessage">Send</button>
+        </div>
+    </div>
+}
+
+@code {
+
+    [Parameter]
+    public string CaseNumber { get; set; } = string.Empty;
+
+    private CaseModel? CaseDetails { get; set; }
+
+    private string chatMessage = string.Empty;
+
+    private HttpClient? _apiHttpClient;
+    private HttpClient? _aiHttpClient;
+    protected override async Task OnInitializedAsync()
+    {
+        //prep http clients
+        _apiHttpClient = HttpClientFactory.CreateClient("casemanagementapi");
+        _aiHttpClient = HttpClientFactory.CreateClient("retryHttpClient");
+
+        //Get app settings
+
+        //Prep Semantic Kernel
+
+
+        //Load the case details using the HttpClient named casemanagementapi
+        var response = await _apiHttpClient.GetAsync($"/case/{CaseNumber}");
+        response.EnsureSuccessStatusCode();
+        CaseDetails = await response.Content.ReadFromJsonAsync<CaseModel>();
+    }
+
+    private void sendMessage()
+    {
+
+        chatMessage = string.Empty;
+    }
+}

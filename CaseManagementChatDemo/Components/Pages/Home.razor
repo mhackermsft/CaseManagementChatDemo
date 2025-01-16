@@ -1,0 +1,19 @@
+﻿@page "/"
+@inject NavigationManager NavigationManager
+
+<PageTitle>Search</PageTitle>
+
+<h1>Case Search</h1>
+
+Enter the case number:
+<InputText @bind-Value="CaseNumber" />
+<button class="btn btn-primary" @onclick="Search">Search</button>
+
+@code
+{
+    private string CaseNumber { get; set; } = string.Empty;
+    private void Search()
+    {
+        NavigationManager.NavigateTo($"/case/{CaseNumber}");
+    }
+}
