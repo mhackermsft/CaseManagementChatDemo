@@ -25,13 +25,13 @@ namespace CaseManagementAPI.Controllers
                     {
                         Id = Guid.NewGuid(),
                         CaseId = caseId,
-                        URI = @"C:\temp\sampledocuments\sample1.pdf"
+                        URI = @"..\CaseManagementAPI\DemoDocuments\sample1.pdf"
                     },
                     new CaseDocument
                     {
                         Id = Guid.NewGuid(),
                         CaseId = caseId,
-                        URI = @"C:\temp\sampledocuments\sample2.pdf"
+                        URI = @"..\CaseManagementAPI\DemoDocuments\sample2.pdf"
                     }
                 }
             };

@@ -46,7 +46,7 @@ else
                 <b>You:</b> @(new MarkupString(msg.Prompt))
             </div>
             <div>
-                <b>AI:</b>
+                <b>Assistant:</b>
                 @if (isAiThinking && string.IsNullOrEmpty(msg.Completion.Trim()))
                 {
                     <div class="chat-bubble">
@@ -136,7 +136,11 @@ else
         // Build the kernel
         kernel = builder.Build();
 
-        //Setup the memory store
+        //Setup the memory store.
+        //NOTE: This is using memory based storage which is for demo purposes only.
+        //      For production use, you would want to use a persistent storage.
+        //      You may run out of memory if you try to load too many documents
+        //      or a large amount of content.
         var kernelMemoryBuilder = new KernelMemoryBuilder()
         .WithAzureOpenAITextEmbeddingGeneration(new AzureOpenAIConfig
             {
@@ -159,7 +163,7 @@ else
                 MaxTokenTotal = settings.AzureOpenAIChatCompletion.MaxInputTokens,
                 MaxRetries = 3
             }, httpClient: _aiHttpClient, textTokenizer: textTokenizer)
-            .WithSimpleVectorDb(new Microsoft.KernelMemory.MemoryStorage.DevTools.SimpleVectorDbConfig { StorageType = Microsoft.KernelMemory.FileSystem.DevTools.FileSystemTypes.Volatile, Directory = "knn" }); ;
+            .WithSimpleVectorDb(new Microsoft.KernelMemory.MemoryStorage.DevTools.SimpleVectorDbConfig { StorageType = Microsoft.KernelMemory.FileSystem.DevTools.FileSystemTypes.Volatile }); ;
 
         //Build the memory store
         kernelMemory = kernelMemoryBuilder.Build<MemoryServerless>();
@@ -177,6 +181,13 @@ else
         CaseDetails = await response.Content.ReadFromJsonAsync<CaseModel>();
 
         //Need to see if the docs are already in the vector store. If not, we need to import them.
+        //For production use you would want some way to verify that the index has all of the documents
+        //and that they are up to date. Case files may change over time and this example does not
+        //handle that.
+        //
+        //Importing documents can take significant time and resources. This is a blocking call.
+        //If working with a large number of documents, you may want to look at other approaches
+        //to preparing the documents and ensuring they are available in the index.
         var indexes = await kernelMemory.ListIndexesAsync();
         bool IsInIndex = indexes.Any(x => x.Name.ToLower() == CaseNumber.ToLower());
         if (!IsInIndex && CaseDetails!=null)

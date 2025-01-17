@@ -21,8 +21,4 @@
     <ProjectReference Include="..\CaseManagementModels\CaseManagementModels.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="knn\" />
-  </ItemGroup>
-
 </Project>
