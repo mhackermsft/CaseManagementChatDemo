@@ -14,15 +14,6 @@
 @inject IOptions<AppSettings> appSettings
 @inject IJSRuntime js
 
-<style>
-    .chatbox
-    {
-        height:350px;
-        border: 1px solid black;
-        overflow-x: scroll;
-    }
-</style>
-
 <h3>Case @CaseNumber</h3>
 
 @if (CaseDetails == null)
@@ -40,18 +31,12 @@ else
         <div class="col-md-11">@CaseDetails.CaseDescription</div>
     </div>
     <div class="row">
-        <div class="col-md-11">Documents:</div>
+        <div class="col-md-6">Plantiff: @CaseDetails.Plaintiff</div>
+        <div class="col-md-6">Defendant: @CaseDetails.Defendant</div>
     </div>
     <div class="row">
-        <div class="col-md-1"></div>
-        <div class="col-md-11">
-            <ul>
-                @foreach (var document in CaseDetails.Documents)
-                {
-                    <li>@document.URI</li>
-                }
-            </ul>
-        </div>
+        <div class="col-md-11">Documents: @CaseDetails.Documents.Count()</div>
+        <br/><br/>
     </div>
 
     <div class="chatbox" id="MessagesInChatdiv">
@@ -81,7 +66,7 @@ else
                     <br />
 
                     <div class="badge bg-primary">Source:</div>
-                
+
                     <ul>
                         @foreach (var citation in msg.Citations)
                         {
@@ -97,6 +82,7 @@ else
         <div class="col-md-5 input-group mt-3">
             <input type="text" class="form-control" placeholder="Ask a question" @bind-value="userChatMessage" @bind-value:event="oninput" @onkeydown="HandleKeyDown" />
             <button class="btn btn-primary" @onclick="sendMessage">Send</button>
+            <button class="btn btn-danger" @onclick="clearMessages">Clear</button>
         </div>
     </div>
 }
@@ -107,9 +93,7 @@ else
     public string CaseNumber { get; set; } = string.Empty;
 
     private CaseModel? CaseDetails { get; set; }
-
     private string userChatMessage = string.Empty;
-    private string messageDisplay = string.Empty;
 
     private HttpClient? _apiHttpClient;
     private HttpClient? _aiHttpClient;
@@ -126,6 +110,7 @@ else
     private List<Message> messagesInChat = new List<Message>();
 
     private bool isAiThinking = false;
+    private bool stopResponse = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -243,7 +228,7 @@ else
             if (answer.RelevantSources.Count > 0)
                 foreach (var source in answer.RelevantSources)
                 {
-                        activeChatMessage.Citations.Add(Utils.StringUtils.CreateCitationHTML(source));
+                    activeChatMessage.Citations.Add(Utils.StringUtils.CreateCitationHTML(source));
                 }
         }
 
@@ -262,7 +247,7 @@ else
 
                     //Add the source to the message
                     activeChatMessage.Citations.Add(Utils.StringUtils.CreateCitationHTML(result));
- 
+
                 }
                 history.AddUserMessage("----------------------------------");
             }
@@ -287,6 +272,12 @@ else
         var markDownBuilder = new StringBuilder();
         await foreach (var chatUpdate in chatCompletionService.GetStreamingChatMessageContentsAsync(history))
         {
+            if (stopResponse)
+            {
+                stopResponse = false;
+                break;
+            }
+
             markDownBuilder.Append(chatUpdate.Content);
             assistantMessage.Append(chatUpdate.Content);
             string partialHTML = md!.Transform(markDownBuilder.ToString());
@@ -300,6 +291,14 @@ else
         await js.InvokeVoidAsync("scrollToBottom", "MessagesInChatdiv");
         StateHasChanged();
 
+    }
+
+    private void clearMessages()
+    {
+        stopResponse = true;
+        messagesInChat.Clear();
+        history.Clear();
+        StateHasChanged();
     }
 
     private void HandleKeyDown(KeyboardEventArgs e)

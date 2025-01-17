@@ -17,6 +17,8 @@ namespace CaseManagementAPI.Controllers
                 CaseId = caseId,
                 CaseName = "Sample Case",
                 CaseDescription = "This is a sample case.",
+                Plaintiff = "Jane Doe",
+                Defendant = "John Doe",
                 Documents = new List<CaseDocument>
                 {
                     new CaseDocument
