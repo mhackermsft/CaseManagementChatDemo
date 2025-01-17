@@ -7,16 +7,19 @@
 @using Microsoft.KernelMemory.AI
 @using Microsoft.KernelMemory.AI.AzureOpenAI
 @using Microsoft.SemanticKernel.ChatCompletion
+@using MarkdownSharp
+@using System.Text
 
 @inject IHttpClientFactory HttpClientFactory
 @inject IOptions<AppSettings> appSettings
+@inject IJSRuntime js
 
 <style>
     .chatbox
     {
-    height:400px;
-    border: 1px solid black;
-    overflow-x: scroll;
+        height:350px;
+        border: 1px solid black;
+        overflow-x: scroll;
     }
 </style>
 
@@ -24,7 +27,7 @@
 
 @if (CaseDetails == null)
 {
-    <p><em>Loading...</em></p>
+    <p><em>Loading case information and documents, please wait...</em></p>
 }
 else
 {
@@ -50,14 +53,50 @@ else
             </ul>
         </div>
     </div>
-    <div class="row">
-        <div class="chatbox">
-            @(new MarkupString(messageDisplay))
-        </div>
+
+    <div class="chatbox" id="MessagesInChatdiv">
+        @foreach (var msg in messagesInChat)
+        {
+            <div>
+                <b>You:</b> @(new MarkupString(msg.Prompt))
+            </div>
+            <div>
+                <b>AI:</b>
+                @if (isAiThinking && string.IsNullOrEmpty(msg.Completion.Trim()))
+                {
+                    <div class="chat-bubble">
+                        <div class="typing">
+                            <div class="dot"></div>
+                            <div class="dot"></div>
+                            <div class="dot"></div>
+                        </div>
+                    </div>
+                }
+                <span style="display:inline">
+                    @(new MarkupString(Utils.StringUtils.StripOuterParagraphTags(msg.Completion)))
+                </span>
+
+                @if (msg.Citations.Count > 0)
+                {
+                    <br />
+
+                    <div class="badge bg-primary">Source:</div>
+                
+                    <ul>
+                        @foreach (var citation in msg.Citations)
+                        {
+                            <li>@(new MarkupString(citation))</li>
+                        }
+                    </ul>
+                }
+            </div>
+        }          
     </div>
+
     <div class="row">
-        <div class="col-md-4">
-            <InputText @bind-Value="chatMessage" /><button class="btn btn-primary" @onclick="sendMessage">Send</button>
+        <div class="col-md-5 input-group mt-3">
+            <input type="text" class="form-control" placeholder="Ask a question" @bind-value="userChatMessage" @bind-value:event="oninput" @onkeydown="HandleKeyDown" />
+            <button class="btn btn-primary" @onclick="sendMessage">Send</button>
         </div>
     </div>
 }
@@ -69,7 +108,7 @@ else
 
     private CaseModel? CaseDetails { get; set; }
 
-    private string chatMessage = string.Empty;
+    private string userChatMessage = string.Empty;
     private string messageDisplay = string.Empty;
 
     private HttpClient? _apiHttpClient;
@@ -81,6 +120,12 @@ else
     private MemoryServerless? kernelMemory = null;
     private IChatCompletionService? chatCompletionService = null;
     private GPT4oTokenizer? textTokenizer = null;
+    private AppSettings? settings;
+
+    private Markdown md = new Markdown();
+    private List<Message> messagesInChat = new List<Message>();
+
+    private bool isAiThinking = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -89,7 +134,7 @@ else
         _aiHttpClient = HttpClientFactory.CreateClient("retryHttpClient");
 
         //Get app settings
-        AppSettings settings = new AppSettings();
+        settings = new AppSettings();
         settings = appSettings.Value;
 
         //Setup the Tokenizer to use
@@ -167,12 +212,26 @@ else
 
     private async void sendMessage()
     {
+
+        isAiThinking = false; 
+        Message activeChatMessage = new Message(prompt: userChatMessage);
+        messagesInChat.Add(activeChatMessage);
+        userChatMessage = string.Empty;
+        isAiThinking = true;
+        StateHasChanged();
+
+        //Need this delay to give the browser enough time to render the MessagesInChatdiv.
+        //If this doesn't exist then it is not able to scoll to the bottom.
+        await Task.Delay(100);
+        await js.InvokeVoidAsync("scrollToBottom", "MessagesInChatdiv");
+
+
         //Semantic search of documents for the specific case index
         SearchResult? searchData = null;
         MemoryAnswer? answer = null;
-        answer = await kernelMemory!.AskAsync(chatMessage, CaseNumber);
+        answer = await kernelMemory!.AskAsync(activeChatMessage.Prompt, CaseNumber);
         if (answer.NoResult)
-            searchData = await kernelMemory!.SearchAsync(chatMessage, CaseNumber);
+            searchData = await kernelMemory!.SearchAsync(activeChatMessage.Prompt, CaseNumber);
 
         //If we got an answer from the kernelmemory, add the facts to the chat history
         if (!answer.NoResult)
@@ -180,6 +239,12 @@ else
             history.AddUserMessage("No matter what the question or request, base the response only on the information below.");
             history.AddUserMessage(answer.Result);
             history.AddUserMessage("----------------------------------");
+
+            if (answer.RelevantSources.Count > 0)
+                foreach (var source in answer.RelevantSources)
+                {
+                        activeChatMessage.Citations.Add(Utils.StringUtils.CreateCitationHTML(source));
+                }
         }
 
         //If we got a search result, add the facts to the chat history
@@ -194,35 +259,54 @@ else
                     {
                         history.AddUserMessage(p.Text);
                     }
+
+                    //Add the source to the message
+                    activeChatMessage.Citations.Add(Utils.StringUtils.CreateCitationHTML(result));
+ 
                 }
                 history.AddUserMessage("----------------------------------");
             }
         }
 
-        history.AddUserMessage(chatMessage);
+        history.AddUserMessage(activeChatMessage.Prompt);
 
-        messageDisplay += "<b>You:</b> " + chatMessage + "<br/><br/>";
-        chatMessage = string.Empty;
-        StateHasChanged();
+        //Clean up history and remove old non-system messages in order to stay below our MaxInputTokens limit.
+        //This is not the most efficient way to do this, but it is simple and works for this demo.
+        if (settings!=null && textTokenizer!=null)
+            history = AIUtils.CleanUpHistory(history, textTokenizer, settings.AzureOpenAIChatCompletion.MaxInputTokens);
 
-        await StreamChatCompletionAsync(history, chatCompletionService!);
+        //Start AI generation
+        await StreamChatCompletionAsync(history, activeChatMessage, chatCompletionService!);
 
     }
 
-    public async Task StreamChatCompletionAsync(ChatHistory history, IChatCompletionService chatCompletionService)
+    public async Task StreamChatCompletionAsync(ChatHistory history,Message activeChatMessage, IChatCompletionService chatCompletionService)
     {
-        string assistantMessage = string.Empty;
-        messageDisplay += "<b>AI:</b> ";
-        StateHasChanged();
+        isAiThinking = false;
+        var assistantMessage = new StringBuilder();
+        var markDownBuilder = new StringBuilder();
         await foreach (var chatUpdate in chatCompletionService.GetStreamingChatMessageContentsAsync(history))
         {
-            assistantMessage += chatUpdate;
-            messageDisplay += chatUpdate;
+            markDownBuilder.Append(chatUpdate.Content);
+            assistantMessage.Append(chatUpdate.Content);
+            string partialHTML = md!.Transform(markDownBuilder.ToString());
+            activeChatMessage.Completion = partialHTML;
+            await js.InvokeVoidAsync("scrollToBottom", "MessagesInChatdiv");
             StateHasChanged();
         }
-        messageDisplay += "<br/><br/>";
 
-        history.AddAssistantMessage(assistantMessage);
+        activeChatMessage.Completion = md.Transform(assistantMessage.ToString());
+        history.AddAssistantMessage(assistantMessage.ToString());
+        await js.InvokeVoidAsync("scrollToBottom", "MessagesInChatdiv");
         StateHasChanged();
+
+    }
+
+    private void HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            sendMessage();
+        }
     }
 }
